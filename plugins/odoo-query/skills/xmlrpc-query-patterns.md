@@ -120,6 +120,152 @@ Reference for performing read-only queries against Odoo instances.
 [('partner_id', '!=', False)]
 ```
 
+## Database Exploration Tools
+
+### Describe Model - Comprehensive Model Information
+
+The `describe_model` action consolidates multiple queries into one call, providing everything needed for migration planning or understanding a model's structure.
+
+**Problem it solves:**
+- `fields_get` returns `None` for selection values
+- Need to query `ir.model.fields` separately to get selection options
+- Multiple calls required to understand a model completely
+
+**What it returns:**
+- All fields with type, string, required, readonly
+- Selection values from ir.model.fields (not fields_get)
+- List of required fields for quick reference
+- Relational fields with their target models
+- Help text for field documentation
+
+```bash
+# Get comprehensive model description
+python3 ${CLAUDE_PLUGIN_ROOT}/scripts/odoo_xmlrpc.py \
+  --url "$URL" --db "$DB" --login "$LOGIN" --api-key "$API_KEY" \
+  --action describe_model \
+  --model "sale.order"
+```
+
+**Example output:**
+```json
+{
+  "success": true,
+  "action": "describe_model",
+  "model": "sale.order",
+  "field_count": 156,
+  "required_fields": ["partner_id", "date_order"],
+  "relational_fields": {
+    "partner_id": "res.partner",
+    "user_id": "res.users",
+    "company_id": "res.company",
+    "order_line": "sale.order.line"
+  },
+  "fields": {
+    "state": {
+      "type": "selection",
+      "string": "Status",
+      "required": true,
+      "readonly": false,
+      "selection": [
+        ["draft", "Quotation"],
+        ["sent", "Quotation Sent"],
+        ["sale", "Sales Order"],
+        ["done", "Locked"],
+        ["cancel", "Cancelled"]
+      ]
+    },
+    "partner_id": {
+      "type": "many2one",
+      "string": "Customer",
+      "required": true,
+      "readonly": false,
+      "relation": "res.partner"
+    }
+  }
+}
+```
+
+**Use cases:**
+- Migration planning: identify required fields before data import
+- Understanding custom models without documentation
+- Checking selection values for state fields
+- Finding relational dependencies
+
+### Find Model - Fuzzy Search with Record Counts
+
+The `find_model` action searches across model names and descriptions with record counts, helping identify the right model when multiple similar ones exist.
+
+**Problem it solves:**
+- Ambiguous model names (e.g., "gwr.pae.cycle" - is this catalog or student-facing?)
+- Finding all models related to a concept (e.g., all "invoice" models)
+- Identifying active vs. unused models
+- Discovering custom models without browsing full list
+
+**What it returns:**
+- Model technical name
+- Model display name
+- Model description/info
+- Record count (shows if model is actively used)
+
+```bash
+# Find all models related to cycles
+python3 ${CLAUDE_PLUGIN_ROOT}/scripts/odoo_xmlrpc.py \
+  --url "$URL" --db "$DB" --login "$LOGIN" --api-key "$API_KEY" \
+  --action find_model \
+  --keyword "cycle"
+```
+
+**Example output:**
+```json
+{
+  "success": true,
+  "action": "find_model",
+  "keyword": "cycle",
+  "count": 3,
+  "models": [
+    {
+      "model": "gwr.pae.cycle",
+      "name": "Student PAE Cycles",
+      "info": "Manages student planning cycles",
+      "record_count": 847
+    },
+    {
+      "model": "gwr.catalog.cycle",
+      "name": "Course Catalog Cycles",
+      "info": "Academic year catalog definitions",
+      "record_count": 12
+    },
+    {
+      "model": "gwr.cycle.archive",
+      "name": "Archived Cycles",
+      "info": "Historical cycle data",
+      "record_count": 0
+    }
+  ]
+}
+```
+
+**Use cases:**
+- Finding the right model when naming is ambiguous
+- Discovering related models (search "invoice" finds account.move, account.payment, etc.)
+- Identifying unused/test models (record_count = 0)
+- Understanding model purposes through record counts
+
+**Common searches:**
+```bash
+# Find all invoice-related models
+--action find_model --keyword "invoice"
+
+# Find payment models
+--action find_model --keyword "payment"
+
+# Find all models with "student" in name
+--action find_model --keyword "student"
+
+# Find custom models (search for company prefix)
+--action find_model --keyword "gwr"
+```
+
 ## Common Query Patterns
 
 ### Sales Investigation
@@ -195,19 +341,33 @@ Reference for performing read-only queries against Odoo instances.
 
 ### Custom Model Investigation
 ```bash
-# Step 1: Discover the model structure
---action fields_get --model "custom.model.name"
+# Step 1: Find the model if name is uncertain
+--action find_model --keyword "partial_name"
 
-# Step 2: Check for state/status field
+# Step 2: Get comprehensive model description
+--action describe_model --model "custom.model.name"
+
+# Step 3: Check for sample records
 --action search_read --model "custom.model.name" \
   --domain "[]" \
   --fields "name,state" \
   --limit 5
 
-# Step 3: Query based on findings
+# Step 4: Query based on findings
 --action search_read --model "custom.model.name" \
   --domain "[('state', '=', 'active')]" \
   --fields "name,field1,field2,create_date"
+```
+
+**Legacy approach (less efficient):**
+```bash
+# Old way: use fields_get (doesn't return selection values)
+--action fields_get --model "custom.model.name"
+
+# Then query ir.model.fields separately for selections
+--action search_read --model "ir.model.fields" \
+  --domain "[('model_id.model', '=', 'custom.model.name')]" \
+  --fields "name,ttype,selection"
 ```
 
 ## Troubleshooting

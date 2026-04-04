@@ -105,6 +105,37 @@ python3 ${CLAUDE_PLUGIN_ROOT}/scripts/odoo_xmlrpc.py \
   --fields "name,partner_id,order_line"
 ```
 
+### 7. Describe Model (Comprehensive)
+Get everything about a model in one call: all fields with types, selection values from ir.model.fields (not fields_get which returns None), required fields highlighted, and relational field targets.
+
+```bash
+python3 ${CLAUDE_PLUGIN_ROOT}/scripts/odoo_xmlrpc.py \
+  --url "$URL" --db "$DB" --login "$LOGIN" --api-key "$API_KEY" \
+  --action describe_model \
+  --model "sale.order"
+```
+
+**Why use this instead of fields_get?**
+- Consolidates multiple calls into one
+- Returns selection values from ir.model.fields (fields_get returns None)
+- Lists required fields separately for migration planning
+- Shows relational field targets clearly
+
+### 8. Find Model (Fuzzy Search)
+Search for models by keyword across model name and description, with record counts to understand their usage.
+
+```bash
+python3 ${CLAUDE_PLUGIN_ROOT}/scripts/odoo_xmlrpc.py \
+  --url "$URL" --db "$DB" --login "$LOGIN" --api-key "$API_KEY" \
+  --action find_model \
+  --keyword "cycle"
+```
+
+**Why use this?**
+- Avoid confusion about model purposes (e.g., is this catalog or student-facing?)
+- Record counts help identify active vs. unused models
+- Fuzzy search finds models even with partial keywords
+
 ## Execution Flow
 
 ### Step 1: Get Connection Details
@@ -131,7 +162,14 @@ python3 ${CLAUDE_PLUGIN_ROOT}/scripts/odoo_xmlrpc.py \
 
 **For "what fields does X have":**
 ```bash
+--action describe_model --model "model.name"
+# Or use fields_get for basic info without selection values
 --action fields_get --model "model.name"
+```
+
+**For "find models related to...":**
+```bash
+--action find_model --keyword "invoice"
 ```
 
 **For "find records where...":**

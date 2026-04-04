@@ -221,6 +221,146 @@ class OdooXMLRPC:
             }
         return result
 
+    def describe_model(self, model: str) -> dict:
+        """Get comprehensive model description including fields with selection values."""
+        # Get basic field information
+        fields_result = self.execute(
+            model,
+            'fields_get',
+            [],
+            {'attributes': ['string', 'type', 'required', 'readonly', 'relation', 'help']}
+        )
+
+        if not fields_result['success']:
+            return fields_result
+
+        fields_data = fields_result['data']
+
+        # Get selection values from ir.model.fields (fields_get returns None)
+        selection_fields = [
+            name for name, info in fields_data.items()
+            if info.get('type') == 'selection'
+        ]
+
+        selection_values = {}
+        if selection_fields:
+            # Get model ID first
+            model_search = self.search_read(
+                'ir.model',
+                domain=[('model', '=', model)],
+                fields=['id'],
+                limit=1
+            )
+
+            if model_search['success'] and model_search['data']:
+                model_id = model_search['data'][0]['id']
+
+                # Fetch selection values from ir.model.fields
+                for field_name in selection_fields:
+                    field_info = self.search_read(
+                        'ir.model.fields',
+                        domain=[('model_id', '=', model_id), ('name', '=', field_name)],
+                        fields=['selection_ids'],
+                        limit=1
+                    )
+
+                    if field_info['success'] and field_info['data']:
+                        selection_ids = field_info['data'][0].get('selection_ids', [])
+                        if selection_ids:
+                            # Fetch actual selection values
+                            sel_values = self.read(
+                                'ir.model.fields.selection',
+                                selection_ids,
+                                fields=['value', 'name']
+                            )
+                            if sel_values['success']:
+                                selection_values[field_name] = [
+                                    (s['value'], s['name']) for s in sel_values['data']
+                                ]
+
+        # Format comprehensive field information
+        formatted_fields = {}
+        required_fields = []
+        relational_fields = {}
+
+        for name, info in fields_data.items():
+            field_info = {
+                'type': info.get('type'),
+                'string': info.get('string'),
+                'required': info.get('required', False),
+                'readonly': info.get('readonly', False),
+            }
+
+            if info.get('help'):
+                field_info['help'] = info['help']
+
+            if info.get('relation'):
+                field_info['relation'] = info['relation']
+                relational_fields[name] = info['relation']
+
+            if name in selection_values:
+                field_info['selection'] = selection_values[name]
+
+            formatted_fields[name] = field_info
+
+            if field_info['required']:
+                required_fields.append(name)
+
+        return {
+            'success': True,
+            'action': 'describe_model',
+            'model': model,
+            'field_count': len(formatted_fields),
+            'required_fields': required_fields,
+            'relational_fields': relational_fields,
+            'fields': formatted_fields
+        }
+
+    def find_model(self, keyword: str) -> dict:
+        """Search models by keyword with record counts."""
+        # Search in both model name and display name
+        domain = [
+            '|',
+            ('model', 'ilike', keyword),
+            ('name', 'ilike', keyword),
+            ('transient', '=', False)
+        ]
+
+        result = self.search_read(
+            'ir.model',
+            domain=domain,
+            fields=['model', 'name', 'info'],
+            limit=50,
+            order='model'
+        )
+
+        if not result['success']:
+            return result
+
+        # Get record counts for each model
+        models_with_counts = []
+        for model_info in result['data']:
+            model_name = model_info['model']
+
+            # Try to count records (some models may not be accessible)
+            count_result = self.search_count(model_name, domain=[])
+            record_count = count_result.get('count', 0) if count_result['success'] else 'N/A'
+
+            models_with_counts.append({
+                'model': model_name,
+                'name': model_info['name'],
+                'info': model_info.get('info', ''),
+                'record_count': record_count
+            })
+
+        return {
+            'success': True,
+            'action': 'find_model',
+            'keyword': keyword,
+            'count': len(models_with_counts),
+            'models': models_with_counts
+        }
+
 
 def parse_domain(domain_str: str) -> list:
     """Parse domain string to Python list."""
@@ -259,7 +399,8 @@ def main():
     parser.add_argument('--api-key', required=True, help='API key or password')
     parser.add_argument('--action', required=True,
                         choices=['test', 'list_models', 'fields_get',
-                                 'search_read', 'search_count', 'read'],
+                                 'search_read', 'search_count', 'read',
+                                 'describe_model', 'find_model'],
                         help='Action to perform')
     parser.add_argument('--model', help='Model name (e.g., sale.order)')
     parser.add_argument('--domain', default='[]', help='Search domain')
@@ -268,6 +409,7 @@ def main():
     parser.add_argument('--limit', type=int, help='Maximum records to return')
     parser.add_argument('--offset', type=int, default=0, help='Offset for pagination')
     parser.add_argument('--order', help='Sort order (e.g., "name asc")')
+    parser.add_argument('--keyword', help='Keyword for find_model action')
 
     args = parser.parse_args()
 
@@ -324,6 +466,18 @@ def main():
                 ids = parse_ids(args.ids)
                 fields = parse_fields(args.fields)
                 result = client.read(args.model, ids, fields=fields)
+
+        elif args.action == 'describe_model':
+            if not args.model:
+                result = {'success': False, 'error': '--model is required for describe_model'}
+            else:
+                result = client.describe_model(args.model)
+
+        elif args.action == 'find_model':
+            if not args.keyword:
+                result = {'success': False, 'error': '--keyword is required for find_model'}
+            else:
+                result = client.find_model(args.keyword)
 
         else:
             result = {'success': False, 'error': f'Unknown action: {args.action}'}
