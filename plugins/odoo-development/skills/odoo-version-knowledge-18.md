@@ -57,6 +57,23 @@ def calculate_total(self, include_tax: bool = True) -> float:
 ]</field>
 ```
 
+## Breaking Changes in v18
+
+| Feature | Change | Action Required |
+|---------|--------|-----------------|
+| `request.not_found()` | Must be **raised**, not returned | Change `return request.not_found()` to `raise request.not_found()` |
+
+### request.not_found() Exception Change
+```python
+# WRONG in v18 - Do not return
+if not record.exists():
+    return request.not_found()
+
+# CORRECT in v18 - Must raise
+if not record.exists():
+    raise request.not_found()
+```
+
 ## Deprecations in v18
 
 | Feature | Status | Replacement | Deadline |
@@ -214,6 +231,7 @@ def action_view_records(self) -> dict:
 
 When developing for Odoo 18.0:
 
+- [ ] **Use `raise request.not_found()` instead of `return request.not_found()`**
 - [ ] Use `_check_company_auto = True` for multi-company models
 - [ ] Add `check_company=True` to cross-company relational fields
 - [ ] Use `SQL()` builder for raw SQL queries

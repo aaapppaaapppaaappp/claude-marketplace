@@ -11,6 +11,7 @@
 
 | Category | Change | Impact |
 |----------|--------|--------|
+| Controllers | `request.not_found()` must be **raised**, not returned | **High** - Update all controllers |
 | Multi-Company | `_check_company_auto` recommended | High - Review all models |
 | Relations | `check_company=True` recommended | High - Update Many2one fields |
 | SQL | `SQL()` builder recommended | Medium - Update raw queries |
@@ -67,6 +68,130 @@ class MyModel(models.Model):
     warehouse_id = fields.Many2one('stock.warehouse', check_company=True)
     account_id = fields.Many2one('account.account', check_company=True)
 ```
+
+## HTTP Controllers: request.not_found() Must Be Raised
+
+### The Breaking Change
+In Odoo 18, `request.not_found()` changed from **returning** a response to **raising** an exception. This is a critical breaking change affecting all HTTP controllers.
+
+### Before (v17 and earlier)
+```python
+from odoo import http
+from odoo.http import request
+
+
+class MyController(http.Controller):
+
+    @http.route('/my_module/record/<int:record_id>', type='http', auth='user')
+    def get_record(self, record_id):
+        """Get record by ID."""
+        record = request.env['my.model'].browse(record_id)
+        if not record.exists():
+            return request.not_found()  # RETURN in v17
+
+        return request.render('my_module.record_detail', {
+            'record': record,
+        })
+```
+
+### After (v18)
+```python
+from odoo import http
+from odoo.http import request
+
+
+class MyController(http.Controller):
+
+    @http.route('/my_module/record/<int:record_id>', type='http', auth='user')
+    def get_record(self, record_id):
+        """Get record by ID."""
+        record = request.env['my.model'].browse(record_id)
+        if not record.exists():
+            raise request.not_found()  # RAISE in v18
+
+        return request.render('my_module.record_detail', {
+            'record': record,
+        })
+```
+
+### Migration Pattern
+
+```python
+# WRONG in v18 - This will cause errors
+if not record.exists():
+    return request.not_found()
+
+# CORRECT in v18 - Must raise the exception
+if not record.exists():
+    raise request.not_found()
+```
+
+### API Endpoints Pattern
+```python
+class APIController(http.Controller):
+
+    @http.route('/api/v1/records/<int:id>', type='http', auth='user',
+                methods=['GET'], csrf=False)
+    def get_record(self, id):
+        """REST API endpoint with proper error handling."""
+        record = request.env['my.model'].browse(id)
+        if not record.exists():
+            raise request.not_found()  # v18: Must raise
+
+        return request.make_response(
+            json.dumps({
+                'status': 'success',
+                'data': {
+                    'id': record.id,
+                    'name': record.name,
+                },
+            }),
+            headers=[('Content-Type', 'application/json')]
+        )
+```
+
+### Website Controllers Pattern
+```python
+class WebsiteController(http.Controller):
+
+    @http.route('/shop/product/<int:product_id>', type='http',
+                auth='public', website=True)
+    def product_detail(self, product_id, **kw):
+        """Website product page."""
+        product = request.env['product.template'].browse(product_id)
+        if not product.exists() or not product.website_published:
+            raise request.not_found()  # v18: Must raise
+
+        return request.render('website_sale.product', {
+            'product': product,
+        })
+```
+
+### File Download Pattern
+```python
+@http.route('/download/file/<int:attachment_id>', type='http', auth='user')
+def download_file(self, attachment_id):
+    """Download file with proper error handling."""
+    attachment = request.env['ir.attachment'].browse(attachment_id)
+    if not attachment.exists():
+        raise request.not_found()  # v18: Must raise
+
+    return request.make_response(
+        base64.b64decode(attachment.datas),
+        headers=[
+            ('Content-Type', attachment.mimetype or 'application/octet-stream'),
+            ('Content-Disposition', f'attachment; filename="{attachment.name}"'),
+        ]
+    )
+```
+
+### Why This Change?
+
+This change aligns with Python exception handling best practices:
+- Exceptions for exceptional conditions (404 is an exceptional flow)
+- Clearer control flow - no need to check return values
+- Better error propagation through the request handling stack
+- Consistent with other Odoo exception patterns
 
 ## Record Rules: allowed_company_ids
 
@@ -251,6 +376,7 @@ https://raw.githubusercontent.com/odoo/odoo/18.0/addons/sale/models/sale_order.p
 
 ## Migration Checklist
 
+- [ ] **CRITICAL**: Change all `return request.not_found()` to `raise request.not_found()`
 - [ ] Add `_check_company_auto = True` to multi-company models
 - [ ] Add `check_company=True` to relational fields
 - [ ] Update record rules to use `allowed_company_ids`
@@ -260,6 +386,20 @@ https://raw.githubusercontent.com/odoo/odoo/18.0/addons/sale/models/sale_order.p
 - [ ] Update index definitions for search fields
 
 ## Common Migration Errors
+
+### Error: Controller returns None or unexpected response
+**Symptom**: Controllers that previously worked now return empty responses or cause errors
+**Fix**: Change `return request.not_found()` to `raise request.not_found()`
+
+```python
+# WRONG - v17 pattern that breaks in v18
+if not record.exists():
+    return request.not_found()
+
+# CORRECT - v18 pattern
+if not record.exists():
+    raise request.not_found()
+```
 
 ### Error: `ValidationError: check_company failed`
 **Fix**: Ensure related records belong to same company or add `check_company=True`
