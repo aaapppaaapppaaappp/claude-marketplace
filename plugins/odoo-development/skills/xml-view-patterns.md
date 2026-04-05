@@ -200,7 +200,7 @@
     <field name="name">my.model.tree</field>
     <field name="model">my.model</field>
     <field name="arch" type="xml">
-        <tree string="My Models">
+        <tree>
             <field name="name"/>
             <field name="partner_id"/>
             <field name="date"/>
@@ -213,8 +213,7 @@
 
 ### Advanced Tree (v17+)
 ```xml
-<tree string="My Models"
-      decoration-danger="state == 'cancel'"
+<tree decoration-danger="state == 'cancel'"
       decoration-warning="state == 'draft'"
       decoration-success="state == 'done'"
       default_order="date desc">
@@ -564,3 +563,4 @@
 | Required | `attrs="{'required': [...]}"` | `required="expr"` |
 | Column hide | N/A | `column_invisible="True"` |
 | Optional cols | Limited | `optional="show/hide"` |
+| Tree `string` attr | `string="..."` supported | Deprecated (omit it) |
