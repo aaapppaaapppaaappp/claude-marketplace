@@ -1,6 +1,6 @@
 ---
-name: odoo-test
-description: Generate test cases for Odoo models and business logic. Use when user asks to "write tests", "generate unit tests", "test module", "create test cases".
+name: odoo-gen-test
+description: Generate test cases for Odoo models and business logic. Use when user asks to "write tests", "generate unit tests", "create test cases".
 arguments:
   - name: path
     description: Path to the module or model to test
@@ -27,7 +27,7 @@ input_examples:
       type: "integration"
 ---
 
-# /odoo-test Command
+# /odoo-gen-test Command
 
 Generate comprehensive test cases for Odoo models and business logic.
 
@@ -276,30 +276,29 @@ def test_as_different_user(self):
     self.assertEqual(record_as_user.name, 'Test')
 ```
 
-## Running Tests
+## Running Generated Tests
 
 ```bash
-# Run all module tests
-./odoo-bin -c odoo.conf -d testdb --test-enable -i {module_name} --stop-after-init
+# Run all module tests (via Doodba)
+invoke test --modules={module_name}
 
 # Run specific test class
-./odoo-bin -c odoo.conf -d testdb --test-enable --test-tags={ModelName}
-
-# Run with specific tags
-./odoo-bin -c odoo.conf -d testdb --test-enable --test-tags=security
+invoke test --modules={module_name} -v
 ```
+
+> To **run** tests (not generate them), use `/odoo-test` from the `odoo-doodba-dev` plugin.
 
 ## Example Usage
 
 ```
 # Generate tests for current module
-/odoo-test
+/odoo-gen-test
 
 # Generate specific test type
-/odoo-test ./my_module unit
+/odoo-gen-test ./my_module unit
 
 # Generate security tests
-/odoo-test ./my_module security 18.0
+/odoo-gen-test ./my_module security 18.0
 ```
 
 ## AI Agent Instructions

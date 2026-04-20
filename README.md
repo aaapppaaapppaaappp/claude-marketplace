@@ -76,7 +76,7 @@ Professional Odoo development toolkit for Doodba containers with a SQLite-based 
 | `/odoo-owl` | Generate OWL components (version-aware) |
 | `/odoo-review` | Review module against Odoo best practices |
 | `/odoo-security` | Generate or audit access rights and record rules |
-| `/odoo-test` | Generate test cases |
+| `/odoo-gen-test` | Generate test cases for models and business logic |
 | `/odoo-upgrade` | Analyze version upgrade compatibility |
 
 **Agents:**
@@ -129,7 +129,7 @@ Instead of:     3,000 lines of Odoo logs
 **12 filter strategies:**
 
 | Filter | Target | Savings |
-|--------|--------|---------|
+|--------|--------|---------| 
 | Test | pytest / invoke test output | 90-95% |
 | Log | Docker / Odoo logs | 85-95% |
 | Python | .py source files | 40-70% |
