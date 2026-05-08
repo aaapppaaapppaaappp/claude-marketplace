@@ -50,6 +50,31 @@ Review an Odoo module for best practices, security vulnerabilities, performance 
 ╚══════════════════════════════════════════════════════════════════════════════╝
 ```
 
+### NO PARALLEL EXPLORATION WHILE THE AGENT RUNS
+
+```
+╔══════════════════════════════════════════════════════════════════════════════╗
+║  When dispatching odoo-code-reviewer, you MUST NOT in the same message       ║
+║  (or while waiting for its result) run Bash/Read/Grep/Glob calls that        ║
+║  inspect the module being reviewed. The reviewer agent reads those files     ║
+║  systematically; duplicating its work wastes tokens and produces overlapping ║
+║  output.                                                                     ║
+║                                                                              ║
+║  Allowed in parallel with the agent:                                         ║
+║    - Reading project CLAUDE.md or memory files.                              ║
+║    - Dispatching a SECOND agent on a DISJOINT subject (e.g. a different      ║
+║      module).                                                                ║
+║                                                                              ║
+║  Forbidden in parallel with the agent:                                       ║
+║    - Reading any file inside the module path passed to the agent.            ║
+║    - Grepping for patterns the reviewer would already check.                 ║
+║    - Cat-ing the manifest of the module under review.                        ║
+║                                                                              ║
+║  Default behavior: dispatch the reviewer ALONE, wait for its report, THEN    ║
+║  inspect anything the report did not cover.                                  ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+```
+
 ## Execution Flow
 
 ### Step 1: Identify Module and Version
@@ -194,10 +219,15 @@ Review the module against these categories:
 
 1. **IDENTIFY**: Determine module path and target version
 2. **MANDATORY**: Invoke `odoo-development:odoo-code-reviewer` agent
+   - Dispatch the agent **alone** in its own tool-use message.
+   - Do NOT in the same message (or while waiting for the result) run Bash/Read/Grep/Glob
+     against the module being reviewed. See "NO PARALLEL EXPLORATION".
+   - Wait for the agent's report before any further file inspection.
 3. **LOAD**: Version-specific review criteria (done by agent)
 4. **SCAN**: All module files systematically (done by agent)
 5. **CATEGORIZE**: Issues by severity and type (done by agent)
 6. **REPORT**: Structured review with actionable recommendations
 7. **PRIORITIZE**: Critical security issues first
 
-**CRITICAL**: Step 2 is MANDATORY. NEVER perform manual reviews without the agent.
+**CRITICAL**: Step 2 is MANDATORY. NEVER perform manual reviews without the agent,
+and NEVER duplicate its work with parallel file exploration.

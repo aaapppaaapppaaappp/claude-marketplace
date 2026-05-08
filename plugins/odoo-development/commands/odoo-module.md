@@ -50,6 +50,33 @@ Generate a production-ready Odoo module following version-specific best practice
 ╚══════════════════════════════════════════════════════════════════════════════╝
 ```
 
+### NO PARALLEL EXPLORATION WHILE THE AGENT RUNS
+
+```
+╔══════════════════════════════════════════════════════════════════════════════╗
+║  When dispatching odoo-context-gatherer, you MUST NOT in the same message    ║
+║  (or while waiting for its result) run Bash/Read/Grep/Glob calls that        ║
+║  inspect the same modules, models, or files the agent will examine.          ║
+║  Duplicating its work wastes tokens and produces overlapping output the      ║
+║  user has to mentally merge.                                                 ║
+║                                                                              ║
+║  Allowed in parallel with the agent:                                         ║
+║    - Reading the project CLAUDE.md or memory files.                          ║
+║    - Reading the manifest of the NEW module being created (does not exist    ║
+║      yet, so the agent cannot examine it).                                   ║
+║    - Dispatching a SECOND agent on a DISJOINT subject.                       ║
+║                                                                              ║
+║  Forbidden in parallel with the agent:                                       ║
+║    - Grepping or listing files in the modules named in the agent prompt.    ║
+║    - Reading model/view/security files of the same Odoo apps the agent is   ║
+║      gathering patterns for.                                                 ║
+║    - Cat-ing manifests of modules the agent has been asked to study.        ║
+║                                                                              ║
+║  Default behavior: dispatch the agent ALONE, wait for its report, THEN       ║
+║  explore anything the report did not cover.                                  ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+```
+
 ## Execution Flow
 
 ### Step 1: Determine Odoo Version
@@ -173,10 +200,15 @@ Generate files in the current working directory:
 
 1. **FIRST**: Determine Odoo version (ask if not provided)
 2. **MANDATORY**: Invoke `odoo-development:odoo-context-gatherer` agent with task description
+   - Dispatch the agent **alone** in its own tool-use message.
+   - Do NOT in the same message (or while waiting for the result) run Bash/Read/Grep/Glob
+     against modules, models, or files the agent will examine. See "NO PARALLEL EXPLORATION".
+   - Wait for the agent's report before any further file inspection.
 3. **THEN**: Load the version-specific module generator skill
 4. **GATHER**: Required information from user
 5. **GENERATE**: Version-appropriate code using patterns from context gatherer
 6. **VERIFY**: Code follows version-specific patterns
 7. **OUTPUT**: Complete module structure
 
-**CRITICAL**: Step 2 is MANDATORY. NEVER skip the context gatherer agent invocation.
+**CRITICAL**: Step 2 is MANDATORY. NEVER skip the context gatherer agent invocation,
+and NEVER duplicate its work with parallel file exploration.
