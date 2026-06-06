@@ -45,20 +45,6 @@ enum Commands {
         reset: bool,
     },
 
-    /// Run Odoo tests (invoke test / pytest) - show failures only
-    Test {
-        /// Arguments passed to the test runner
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<String>,
-    },
-
-    /// Filter Docker/Odoo logs - errors and warnings only
-    Logs {
-        /// Arguments passed to docker compose logs
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<String>,
-    },
-
     /// Read a file with token-optimized filtering
     Read {
         /// File path to read
@@ -69,75 +55,13 @@ enum Commands {
         level: String,
     },
 
-    /// Git operations with compact output
-    Git {
-        /// Git subcommand and arguments
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<String>,
-    },
-
-    /// Grep/search with grouped, deduplicated output
-    Grep {
-        /// Arguments passed to grep/rg
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<String>,
-    },
-
-    /// Directory listing with compact tree view
-    Ls {
-        /// Arguments passed to ls
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<String>,
-    },
-
-    /// Docker commands with compact output
-    Docker {
-        /// Arguments passed to docker
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<String>,
-    },
-
-    /// pip/uv commands with summary output
-    Pip {
-        /// Arguments passed to pip
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<String>,
-    },
-
-    /// SQL queries with compact output
-    Sql {
-        /// Arguments passed to psql
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<String>,
-    },
-
-    /// Tree directory listing
-    Tree {
-        /// Arguments passed to tree
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<String>,
-    },
-
-    /// Find files
-    Find {
-        /// Arguments passed to find
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<String>,
-    },
-
-    /// Run any command with error-only filtering
-    Err {
-        /// Command and arguments
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<String>,
-    },
-
-    /// Run any command with passthrough (track but don't filter)
-    Proxy {
-        /// Command and arguments
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<String>,
-    },
+    /// Run any command (passed verbatim) and apply the matching output filter.
+    ///
+    /// This is the entry point the PreToolUse hook uses: it prefixes the FULL
+    /// original command with `otk`, e.g. `docker logs web` -> `otk docker logs web`.
+    /// OTK runs the command exactly as given and picks a filter by inspecting it.
+    #[command(external_subcommand)]
+    Run(Vec<String>),
 }
 
 fn main() -> Result<()> {
@@ -147,58 +71,155 @@ fn main() -> Result<()> {
         Commands::Gain { daily, json, reset } => {
             gain::run(daily, json, reset)?;
         }
-        Commands::Test { args } => {
-            run_filtered("test", &args, cli.verbose, filters::test_filter)?;
-        }
-        Commands::Logs { args } => {
-            run_filtered("logs", &args, cli.verbose, filters::log_filter)?;
-        }
         Commands::Read { path, level } => {
             run_read(&path, &level, cli.verbose)?;
         }
-        Commands::Git { args } => {
-            run_git(&args, cli.verbose)?;
-        }
-        Commands::Grep { args } => {
-            run_filtered("grep", &args, cli.verbose, filters::grep_filter)?;
-        }
-        Commands::Ls { args } => {
-            run_filtered("ls", &args, cli.verbose, filters::ls_filter)?;
-        }
-        Commands::Docker { args } => {
-            run_filtered("docker", &args, cli.verbose, filters::docker_filter)?;
-        }
-        Commands::Pip { args } => {
-            run_filtered("pip", &args, cli.verbose, filters::pip_filter)?;
-        }
-        Commands::Sql { args } => {
-            run_filtered("psql", &args, cli.verbose, filters::sql_filter)?;
-        }
-        Commands::Tree { args } => {
-            run_filtered("tree", &args, cli.verbose, filters::ls_filter)?;
-        }
-        Commands::Find { args } => {
-            run_filtered("find", &args, cli.verbose, filters::ls_filter)?;
-        }
-        Commands::Err { args } => {
-            run_filtered("err", &args, cli.verbose, filters::error_filter)?;
-        }
-        Commands::Proxy { args } => {
-            run_proxy(&args, cli.verbose)?;
+        Commands::Run(args) => {
+            run_command(&args, cli.verbose)?;
         }
     }
 
     Ok(())
 }
 
-/// Execute a command, apply a filter function, track metrics, and print result.
-fn run_filtered(
-    cmd_name: &str,
-    args: &[String],
-    verbose: u8,
-    filter_fn: fn(&str) -> String,
-) -> Result<()> {
+/// Map a command (already split into tokens, binary first) to a stable filter key.
+///
+/// The key is intentionally a `&'static str` so it can be unit-tested without
+/// comparing function pointers. `filter_for` turns the key into the filter fn.
+fn classify(args: &[String]) -> &'static str {
+    let a0 = args.first().map(|s| s.as_str()).unwrap_or("");
+    let a1 = args.get(1).map(|s| s.as_str()).unwrap_or("");
+    let a2 = args.get(2).map(|s| s.as_str()).unwrap_or("");
+
+    match a0 {
+        "git" => match a1 {
+            "status" => "git_status",
+            "diff" => "git_diff",
+            "log" => "git_log",
+            "add" | "commit" | "push" | "pull" | "fetch" | "checkout" | "stash" | "merge"
+            | "rebase" | "tag" | "reset" => "ok",
+            _ => "passthrough",
+        },
+        // `docker logs ...` and `docker compose logs ...` -> log filter; other docker -> docker filter
+        "docker" | "docker-compose" | "podman" => {
+            if a1 == "logs" || (a1 == "compose" && a2 == "logs") {
+                "log"
+            } else {
+                "docker"
+            }
+        }
+        "invoke" => {
+            if a1 == "test" {
+                "test"
+            } else {
+                "passthrough"
+            }
+        }
+        "pytest" | "py.test" => "test",
+        "grep" | "rg" | "egrep" | "fgrep" | "ag" => "grep",
+        "ls" => "ls",
+        "tree" => "ls",
+        "find" | "fd" => "ls",
+        "pip" | "pip3" | "uv" => "pip",
+        "psql" | "mysql" => "sql",
+        _ => "passthrough",
+    }
+}
+
+/// Resolve a filter key to its filter function.
+fn filter_for(key: &str) -> fn(&str) -> String {
+    match key {
+        "test" => filters::test_filter,
+        "log" => filters::log_filter,
+        "git_status" => filters::git_status_filter,
+        "git_diff" => filters::git_diff_filter,
+        "git_log" => filters::git_log_filter,
+        "ok" => filters::ok_filter,
+        "grep" => filters::grep_filter,
+        "ls" => filters::ls_filter,
+        "docker" => filters::docker_filter,
+        "pip" => filters::pip_filter,
+        "sql" => filters::sql_filter,
+        _ => filters::passthrough,
+    }
+}
+
+/// A short, filesystem-safe label for tee files (e.g. "git_status", "docker_logs", "ls").
+fn tee_name(args: &[String]) -> String {
+    let take = match args.first().map(|s| s.as_str()) {
+        Some("git") | Some("docker") | Some("docker-compose") | Some("invoke") | Some("pip") => {
+            2.min(args.len())
+        }
+        _ => 1.min(args.len()),
+    };
+    let raw = args[..take].join("_");
+    raw.chars()
+        .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+        .collect()
+}
+
+/// Dispatch a verbatim command: handle the `proxy`/`err` modifiers, otherwise
+/// run the command and apply its classified filter.
+fn run_command(args: &[String], verbose: u8) -> Result<()> {
+    if args.is_empty() {
+        anyhow::bail!("No command provided");
+    }
+
+    match args[0].as_str() {
+        // `otk proxy <cmd>` - run without filtering, track for metrics only
+        "proxy" => return run_proxy(&args[1..], verbose),
+        // `otk err <cmd>` - run any command, keep error/warning lines only
+        "err" => {
+            if args.len() < 2 {
+                anyhow::bail!("No command provided to 'err'");
+            }
+            let command = args[1..].join(" ");
+            return exec_filtered(&command, "err", filters::error_filter, true, verbose);
+        }
+        _ => {}
+    }
+
+    let key = classify(args);
     let command = args.join(" ");
+    exec_filtered(
+        &command,
+        &tee_name(args),
+        filter_for(key),
+        benign_nonzero(key),
+        verbose,
+    )
+}
+
+/// True for commands where a non-zero exit code is benign/expected and the output
+/// filter should still run instead of being replaced by a raw error dump:
+/// - "test": a failing test suite exits non-zero but we want the filtered failures
+/// - "grep": exit 1 means "no matches", not an error
+/// - "ls" (ls/tree/find): exit 1 often means "some paths were inaccessible"
+fn benign_nonzero(key: &str) -> bool {
+    matches!(key, "test" | "grep" | "ls")
+}
+
+/// Execute `command` via `sh -c`, apply `filter_fn`, tee full output, track metrics,
+/// and preserve the child's exit code.
+///
+/// `filter_on_failure` controls what happens on a non-zero exit:
+/// - `false` (most commands): show the raw error tail, do NOT filter. This stops a
+///   filter from masking a real error as success (e.g. `git_status_filter` printing
+///   "Clean working tree." when git actually failed).
+/// - `true` (test runners, grep, find/ls): still apply the filter, because a non-zero
+///   exit is benign/expected there (failing tests are the point; grep exit 1 = no
+///   matches; find exit 1 = some paths inaccessible but results are valid).
+///
+/// Exit codes 126/127 (cannot execute / command not found) are ALWAYS treated as a
+/// hard failure regardless of `filter_on_failure`, so a launcher that never ran
+/// (e.g. `invoke: not found`) is never reported as success.
+fn exec_filtered(
+    command: &str,
+    label: &str,
+    filter_fn: fn(&str) -> String,
+    filter_on_failure: bool,
+    verbose: u8,
+) -> Result<()> {
     let timer = tracking::TimedExecution::start();
 
     if verbose > 0 {
@@ -206,7 +227,7 @@ fn run_filtered(
     }
 
     let output = std::process::Command::new("sh")
-        .args(["-c", &command])
+        .args(["-c", command])
         .output()
         .map_err(|e| anyhow::anyhow!("Failed to execute '{}': {}", command, e))?;
 
@@ -214,40 +235,51 @@ fn run_filtered(
     let stderr = String::from_utf8_lossy(&output.stderr);
     let raw = if stderr.is_empty() {
         stdout.to_string()
+    } else if stdout.is_empty() {
+        stderr.to_string()
     } else {
         format!("{}\n{}", stdout, stderr)
     };
 
     let exit_code = output.status.code().unwrap_or(1);
-    let filtered = filter_fn(&raw);
 
-    // Graceful fallback
-    let final_output = if filtered.trim().is_empty() {
-        if exit_code == 0 {
-            "ok".to_string()
-        } else {
-            let lines: Vec<&str> = raw.lines().collect();
-            let tail: Vec<&str> = lines.iter().rev().take(15).copied().collect();
-            format!(
-                "Command failed (exit code {}):\n{}",
-                exit_code,
-                tail.into_iter().rev().collect::<Vec<&str>>().join("\n")
-            )
-        }
-    } else {
-        filtered
+    let launch_failure = exit_code == 126 || exit_code == 127;
+    let hard_failure = exit_code != 0 && (launch_failure || !filter_on_failure);
+
+    let raw_tail = || {
+        let lines: Vec<&str> = raw.lines().collect();
+        let n = lines.len().min(20);
+        lines[lines.len() - n..].join("\n")
     };
 
-    // Tee: save full output for recovery
-    if let Some(hint) = tee::tee_and_hint(&raw, cmd_name, exit_code) {
+    let final_output = if hard_failure {
+        // Show the raw error tail verbatim so a filter can't mask the failure.
+        if raw.trim().is_empty() {
+            format!("Command failed (exit code {}).", exit_code)
+        } else {
+            format!("Command failed (exit code {}):\n{}", exit_code, raw_tail())
+        }
+    } else {
+        let filtered = filter_fn(&raw);
+        if filtered.trim().is_empty() {
+            if exit_code == 0 {
+                "ok".to_string()
+            } else {
+                raw_tail()
+            }
+        } else {
+            filtered
+        }
+    };
+
+    if let Some(hint) = tee::tee_and_hint(&raw, label, exit_code) {
         println!("{}\n{}", final_output, hint);
     } else {
         println!("{}", final_output);
     }
 
-    timer.track(&command, &format!("otk {}", cmd_name), &raw, &final_output);
+    timer.track(command, &format!("otk {}", label), &raw, &final_output);
 
-    // Preserve exit code
     if exit_code != 0 {
         std::process::exit(exit_code);
     }
@@ -295,77 +327,11 @@ fn run_read(path: &str, level: &str, verbose: u8) -> Result<()> {
     Ok(())
 }
 
-/// Git commands with subcommand-aware filtering.
-fn run_git(args: &[String], verbose: u8) -> Result<()> {
-    if args.is_empty() {
-        anyhow::bail!("No git subcommand provided");
-    }
-
-    let subcmd = &args[0];
-    let full_args = std::iter::once("git".to_string())
-        .chain(args.iter().cloned())
-        .collect::<Vec<_>>();
-    let command = full_args.join(" ");
-
-    let filter_fn: fn(&str) -> String = match subcmd.as_str() {
-        "status" => filters::git_status_filter,
-        "diff" => filters::git_diff_filter,
-        "log" => filters::git_log_filter,
-        "add" | "commit" | "push" | "pull" | "fetch" | "checkout" | "stash" | "merge" | "rebase" => {
-            filters::ok_filter
-        }
-        _ => filters::passthrough,
-    };
-
-    let timer = tracking::TimedExecution::start();
-
-    if verbose > 0 {
-        eprintln!("[otk] Running: {}", command);
-    }
-
-    let output = std::process::Command::new("sh")
-        .args(["-c", &command])
-        .output()
-        .map_err(|e| anyhow::anyhow!("Failed to execute '{}': {}", command, e))?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let raw = if stderr.is_empty() {
-        stdout.to_string()
-    } else {
-        format!("{}\n{}", stdout, stderr)
-    };
-
-    let exit_code = output.status.code().unwrap_or(1);
-    let filtered = filter_fn(&raw);
-
-    let final_output = if filtered.trim().is_empty() && exit_code == 0 {
-        "ok".to_string()
-    } else if filtered.trim().is_empty() {
-        let lines: Vec<&str> = raw.lines().collect();
-        let n = lines.len().min(15);
-        lines[lines.len() - n..].join("\n")
-    } else {
-        filtered
-    };
-
-    if let Some(hint) = tee::tee_and_hint(&raw, &format!("git_{}", subcmd), exit_code) {
-        println!("{}\n{}", final_output, hint);
-    } else {
-        println!("{}", final_output);
-    }
-
-    timer.track(&command, &format!("otk git {}", subcmd), &raw, &final_output);
-
-    if exit_code != 0 {
-        std::process::exit(exit_code);
-    }
-
-    Ok(())
-}
-
 /// Proxy: run command without filtering, track for metrics only.
 fn run_proxy(args: &[String], verbose: u8) -> Result<()> {
+    if args.is_empty() {
+        anyhow::bail!("No command provided to 'proxy'");
+    }
     let command = args.join(" ");
     let timer = tracking::TimedExecution::start();
 
@@ -395,4 +361,78 @@ fn run_proxy(args: &[String], verbose: u8) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn a(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn classify_docker_logs_is_log_filter() {
+        assert_eq!(classify(&a(&["docker", "logs", "web"])), "log");
+        assert_eq!(classify(&a(&["docker", "compose", "logs", "web"])), "log");
+    }
+
+    #[test]
+    fn classify_docker_other_is_docker_filter() {
+        assert_eq!(classify(&a(&["docker", "ps"])), "docker");
+        assert_eq!(classify(&a(&["docker", "images"])), "docker");
+    }
+
+    #[test]
+    fn classify_git_subcommands() {
+        assert_eq!(classify(&a(&["git", "status"])), "git_status");
+        assert_eq!(classify(&a(&["git", "diff"])), "git_diff");
+        assert_eq!(classify(&a(&["git", "log"])), "git_log");
+        assert_eq!(classify(&a(&["git", "commit", "-m", "x"])), "ok");
+        assert_eq!(classify(&a(&["git", "show"])), "passthrough");
+    }
+
+    #[test]
+    fn classify_test_runners() {
+        assert_eq!(classify(&a(&["invoke", "test", "sale"])), "test");
+        assert_eq!(classify(&a(&["pytest", "tests/"])), "test");
+        assert_eq!(classify(&a(&["invoke", "build"])), "passthrough");
+    }
+
+    #[test]
+    fn classify_search_listing_pkg_sql() {
+        assert_eq!(classify(&a(&["grep", "-n", "foo", "x.py"])), "grep");
+        assert_eq!(classify(&a(&["rg", "foo"])), "grep");
+        assert_eq!(classify(&a(&["ls", "-la"])), "ls");
+        assert_eq!(classify(&a(&["find", "/etc", "-name", "hosts"])), "ls");
+        assert_eq!(classify(&a(&["tree", "."])), "ls");
+        assert_eq!(classify(&a(&["pip", "list"])), "pip");
+        assert_eq!(classify(&a(&["psql", "-c", "select 1"])), "sql");
+    }
+
+    #[test]
+    fn classify_unknown_is_passthrough() {
+        assert_eq!(classify(&a(&["echo", "hi"])), "passthrough");
+        assert_eq!(classify(&a(&["npm", "test"])), "passthrough");
+    }
+
+    #[test]
+    fn tee_name_is_filesystem_safe() {
+        assert_eq!(tee_name(&a(&["git", "status"])), "git_status");
+        assert_eq!(tee_name(&a(&["docker", "logs", "web"])), "docker_logs");
+        assert_eq!(tee_name(&a(&["ls", "-la"])), "ls");
+    }
+
+    #[test]
+    fn benign_nonzero_only_for_test_grep_ls() {
+        assert!(benign_nonzero("test"));
+        assert!(benign_nonzero("grep"));
+        assert!(benign_nonzero("ls"));
+        assert!(!benign_nonzero("git_status"));
+        assert!(!benign_nonzero("git_diff"));
+        assert!(!benign_nonzero("ok"));
+        assert!(!benign_nonzero("docker"));
+        assert!(!benign_nonzero("log"));
+        assert!(!benign_nonzero("passthrough"));
+    }
 }
