@@ -102,7 +102,7 @@ fn write_tee_file(
     let content = if raw.len() > max_file_size {
         format!(
             "{}\n\n--- truncated at {} bytes ---",
-            &raw[..max_file_size],
+            crate::filters::truncate_at_boundary(raw, max_file_size),
             max_file_size
         )
     } else {
@@ -181,4 +181,22 @@ pub fn tee_always(raw: &str, command_slug: &str) -> Option<String> {
     let tee_dir = get_tee_dir()?;
     let path = write_tee_file(raw, command_slug, &tee_dir, get_max_size(), get_max_files())?;
     Some(format_hint(&path))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_write_tee_file_cjk_truncation() {
+        // raw output larger than max_file_size with a CJK char straddling
+        // the limit — the truncation must not split a UTF-8 character.
+        let dir = std::env::temp_dir().join("otk_tee_test_cjk");
+        let raw = "中".repeat(40); // 120 bytes; byte 100 is mid-character
+        let path = write_tee_file(&raw, "cjk_test", &dir, 100, 5).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("中中中"));
+        assert!(content.contains("truncated"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

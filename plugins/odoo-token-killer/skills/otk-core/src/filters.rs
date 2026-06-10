@@ -69,6 +69,20 @@ fn strip_ansi(text: &str) -> String {
     RE_ANSI.replace_all(text, "").to_string()
 }
 
+/// Truncate to at most `max` bytes without splitting a UTF-8 character —
+/// a raw `&s[..max]` panics when byte `max` lands inside a multi-byte char
+/// (CJK output from i18n files, SQL rows, log lines...).
+pub(crate) fn truncate_at_boundary(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    let mut end = max;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 fn normalize_blanks(text: &str) -> String {
     RE_BLANK_LINES.replace_all(text, "\n\n").to_string()
 }
@@ -392,7 +406,7 @@ pub fn xml_filter(output: &str) -> String {
                 result.push(line.to_string());
             }
         } else if trimmed.len() > 100 {
-            result.push(format!("{}... [{} chars]", &line[..100.min(line.len())], trimmed.len()));
+            result.push(format!("{}... [{} chars]", truncate_at_boundary(line, 100), trimmed.len()));
         } else {
             result.push(line.to_string());
         }
@@ -723,7 +737,7 @@ fn odoo_xml_filter(output: &str) -> String {
 
         // Other tags: truncate long content
         if trimmed.contains('<') && trimmed.len() > 120 {
-            result.push(format!("{}...[truncated]", &line[..120.min(line.len())]));
+            result.push(format!("{}...[truncated]", truncate_at_boundary(line, 120)));
         } else if trimmed.contains('<') {
             result.push(line.to_string());
         }
@@ -878,7 +892,7 @@ pub fn git_log_filter(output: &str) -> String {
         let trimmed = line.trim();
         if trimmed.starts_with("commit ") {
             if let (Some(hash), Some(msg)) = (&current_hash, &current_msg) {
-                commits.push(format!("{} {}", &hash[..7.min(hash.len())], msg));
+                commits.push(format!("{} {}", truncate_at_boundary(hash, 7), msg));
             }
             current_hash = trimmed.split_whitespace().nth(1).map(|s| s.to_string());
             current_msg = None;
@@ -894,7 +908,7 @@ pub fn git_log_filter(output: &str) -> String {
     }
 
     if let (Some(hash), Some(msg)) = (&current_hash, &current_msg) {
-        commits.push(format!("{} {}", &hash[..7.min(hash.len())], msg));
+        commits.push(format!("{} {}", truncate_at_boundary(hash, 7), msg));
     }
 
     if commits.is_empty() {
@@ -918,7 +932,7 @@ pub fn grep_filter(output: &str) -> String {
         if let Some(pos) = line.find(':') {
             let filename = &line[..pos];
             let rest = &line[pos + 1..];
-            let content = if rest.len() > 100 { &rest[..100] } else { rest };
+            let content = truncate_at_boundary(rest, 100);
             by_file
                 .entry(filename.to_string())
                 .or_default()
@@ -927,11 +941,7 @@ pub fn grep_filter(output: &str) -> String {
             by_file
                 .entry("(no file)".to_string())
                 .or_default()
-                .push(if line.len() > 100 {
-                    line[..100].to_string()
-                } else {
-                    line.to_string()
-                });
+                .push(truncate_at_boundary(line, 100).to_string());
         }
     }
 
@@ -1042,7 +1052,7 @@ pub fn docker_filter(output: &str) -> String {
             .to_string();
 
         if truncated.len() > 120 {
-            result.push(format!("{}...", &truncated[..120]));
+            result.push(format!("{}...", truncate_at_boundary(&truncated, 120)));
         } else {
             result.push(truncated);
         }
@@ -1114,7 +1124,7 @@ pub fn sql_filter(output: &str) -> String {
             continue;
         }
         if line.len() > 150 {
-            result.push(format!("{}...", &line[..150]));
+            result.push(format!("{}...", truncate_at_boundary(line, 150)));
         } else {
             result.push(line.to_string());
         }
@@ -1184,11 +1194,7 @@ pub fn ok_filter(output: &str) -> String {
     for line in clean.lines() {
         let trimmed = line.trim();
         if !trimmed.is_empty() {
-            let display = if trimmed.len() > 80 {
-                &trimmed[..80]
-            } else {
-                trimmed
-            };
+            let display = truncate_at_boundary(trimmed, 80);
             return format!("ok {}", display);
         }
     }
@@ -1211,6 +1217,79 @@ mod tests {
     #[test]
     fn test_strip_ansi() {
         assert_eq!(strip_ansi("\x1b[32mgreen\x1b[0m"), "green");
+    }
+
+    // CJK truncation safety: every filter that shortens long lines must cut
+    // on a UTF-8 char boundary. Each input below places a 3-byte CJK char
+    // across the filter's byte limit — a raw `&s[..N]` slice panics there.
+
+    #[test]
+    fn test_grep_filter_cjk_colon_branch() {
+        // "file:content" branch — content longer than 100 bytes, all CJK
+        // (40 × 3 bytes; byte 100 is mid-character).
+        let line = format!("zh_TW.po:{}", "中".repeat(40));
+        let output = grep_filter(&line);
+        assert!(output.contains("zh_TW.po"));
+        assert!(output.contains("中中中"));
+    }
+
+    #[test]
+    fn test_grep_filter_cjk_no_colon_branch() {
+        // no-colon branch — the whole line is truncated.
+        let line = "中".repeat(40);
+        let output = grep_filter(&line);
+        assert!(output.contains("(no file)"));
+        assert!(output.contains("中中中"));
+    }
+
+    #[test]
+    fn test_xml_filter_cjk_long_text_line() {
+        // generic-XML path, non-tag line > 100 bytes.
+        let line = "中".repeat(40);
+        let output = xml_filter(&line);
+        assert!(output.contains("中中中"));
+        assert!(output.contains("[120 chars]"));
+    }
+
+    #[test]
+    fn test_odoo_xml_filter_cjk_long_tag_line() {
+        // Odoo-XML path, "other tag" line > 120 bytes (byte 120 mid-char).
+        let input = format!("<odoo>\n<xy>{}</xy>\n</odoo>", "中".repeat(40));
+        let output = xml_filter(&input);
+        assert!(output.contains("中中中"));
+    }
+
+    #[test]
+    fn test_git_log_filter_cjk_hash_token() {
+        // degenerate log line whose second token is CJK — hash[..7] must not
+        // split a character.
+        let input = "commit 中文字中文字中\n    subject\n";
+        let output = git_log_filter(input);
+        assert!(output.contains("subject"));
+    }
+
+    #[test]
+    fn test_docker_filter_cjk_long_line() {
+        // > 120 bytes, misaligned so byte 120 is mid-character.
+        let line = format!("x{}", "中".repeat(50));
+        let output = docker_filter(&line);
+        assert!(output.contains("中中中"));
+    }
+
+    #[test]
+    fn test_sql_filter_cjk_long_row() {
+        // > 150 bytes, misaligned so byte 150 is mid-character.
+        let line = format!("x{}", "中".repeat(60));
+        let output = sql_filter(&line);
+        assert!(output.contains("中中中"));
+    }
+
+    #[test]
+    fn test_ok_filter_cjk_long_first_line() {
+        // default branch, > 80 bytes, byte 80 mid-character.
+        let line = format!("x{}", "中".repeat(30));
+        let output = ok_filter(&line);
+        assert!(output.starts_with("ok x中"));
     }
 
     #[test]
