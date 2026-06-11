@@ -86,10 +86,11 @@ case "$FIRST_CMD" in
         ;;
 
     # -- Git --
+    # NOTE: `git diff` is deliberately NOT rewritten. Agents consume patch
+    # text verbatim (code review, `> file.patch` redirects, format-patch
+    # workflows); the summary filter destroyed it and turned `--stat` output
+    # into a false "No changes.".
     "git status"*)
-        REWRITTEN="${ENV_PREFIX}${OTK_CMD} ${FIRST_CMD}"
-        ;;
-    "git diff"*)
         REWRITTEN="${ENV_PREFIX}${OTK_CMD} ${FIRST_CMD}"
         ;;
     "git log"*)

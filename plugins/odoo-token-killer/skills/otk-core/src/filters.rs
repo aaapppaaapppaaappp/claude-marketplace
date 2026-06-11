@@ -828,6 +828,11 @@ pub fn git_status_filter(output: &str) -> String {
 
 pub fn git_diff_filter(output: &str) -> String {
     let clean = strip_ansi(output);
+
+    if clean.trim().is_empty() {
+        return "No changes.".to_string();
+    }
+
     let mut files: Vec<String> = Vec::new();
     let mut hunks: Vec<String> = Vec::new();
     let mut current_file: Option<String> = None;
@@ -857,7 +862,11 @@ pub fn git_diff_filter(output: &str) -> String {
     }
 
     if files.is_empty() {
-        return "No changes.".to_string();
+        // Non-empty output without `diff --git` markers is not a unified
+        // diff — it's an already-compact format like `--stat`, `--name-only`
+        // or `--numstat`. Summarizing it here used to report real changes as
+        // a false "No changes."; pass it through untouched instead.
+        return clean;
     }
 
     let mut result = format!("{} files, +{}/-{} lines", files.len(), additions, deletions);
@@ -1332,6 +1341,28 @@ mod tests {
         assert!(output.contains("Fix bug"));
         assert!(output.contains("def4567"));
         assert!(!output.contains("Author:"));
+    }
+
+    #[test]
+    fn test_git_diff_filter_empty_output_is_no_changes() {
+        assert_eq!(git_diff_filter(""), "No changes.");
+        assert_eq!(git_diff_filter("\n"), "No changes.");
+    }
+
+    #[test]
+    fn test_git_diff_filter_stat_output_passes_through() {
+        // `git diff --stat` has no `diff --git` markers; it must pass through
+        // verbatim, not be reported as "No changes.".
+        let input = " a.py | 10 +++++-----\n b.py |  2 ++\n 2 files changed, 7 insertions(+), 5 deletions(-)";
+        assert_eq!(git_diff_filter(input), input);
+    }
+
+    #[test]
+    fn test_git_diff_filter_unified_diff_is_summarized() {
+        let input = "diff --git a/foo.py b/foo.py\nindex 1111111..2222222 100644\n--- a/foo.py\n+++ b/foo.py\n@@ -1,3 +1,4 @@ def main():\n context\n+added line\n";
+        let output = git_diff_filter(input);
+        assert!(output.contains("1 files, +1/-0 lines"), "got: {}", output);
+        assert!(output.contains("foo.py"), "got: {}", output);
     }
 
     #[test]
