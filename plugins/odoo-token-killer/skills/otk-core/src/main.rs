@@ -158,6 +158,36 @@ fn tee_name(args: &[String]) -> String {
         .collect()
 }
 
+/// Quote one argv element for `sh -c`. Args that are plain
+/// alphanumeric/path-ish pass through; anything else gets single-quoted
+/// (with embedded `'` escaped as `'\''`).
+fn shell_quote(arg: &str) -> String {
+    let plain = !arg.is_empty()
+        && arg
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "_-./:=@%+,".contains(c));
+    if plain {
+        arg.to_string()
+    } else {
+        format!("'{}'", arg.replace('\'', "'\\''"))
+    }
+}
+
+/// Re-serialize parsed argv into a `sh -c` string. The caller's shell already
+/// consumed one layer of quoting, so each element must be re-quoted or
+/// patterns like `O4\|O6` lose their backslash and `-E "O4|O6"` turns into a
+/// real shell pipe. A single element is treated as a complete raw command
+/// string (the `otk proxy "cmd | cmd"` form) and passed through untouched.
+fn shell_join(args: &[String]) -> String {
+    if args.len() == 1 {
+        return args[0].clone();
+    }
+    args.iter()
+        .map(|a| shell_quote(a))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Dispatch a verbatim command: handle the `proxy`/`err` modifiers, otherwise
 /// run the command and apply its classified filter.
 fn run_command(args: &[String], verbose: u8) -> Result<()> {
@@ -173,14 +203,14 @@ fn run_command(args: &[String], verbose: u8) -> Result<()> {
             if args.len() < 2 {
                 anyhow::bail!("No command provided to 'err'");
             }
-            let command = args[1..].join(" ");
+            let command = shell_join(&args[1..]);
             return exec_filtered(&command, "err", filters::error_filter, true, verbose);
         }
         _ => {}
     }
 
     let key = classify(args);
-    let command = args.join(" ");
+    let command = shell_join(args);
     exec_filtered(
         &command,
         &tee_name(args),
@@ -332,7 +362,7 @@ fn run_proxy(args: &[String], verbose: u8) -> Result<()> {
     if args.is_empty() {
         anyhow::bail!("No command provided to 'proxy'");
     }
-    let command = args.join(" ");
+    let command = shell_join(args);
     let timer = tracking::TimedExecution::start();
 
     if verbose > 0 {
@@ -421,6 +451,59 @@ mod tests {
         assert_eq!(tee_name(&a(&["git", "status"])), "git_status");
         assert_eq!(tee_name(&a(&["docker", "logs", "web"])), "docker_logs");
         assert_eq!(tee_name(&a(&["ls", "-la"])), "ls");
+    }
+
+    // Argv arrives already parsed by the caller's shell; re-serializing it for
+    // `sh -c` must re-quote, or patterns like `O4\|O6` lose their backslash and
+    // `-E "O4|O6"` becomes a real shell pipe (`sh: O6: not found`).
+
+    #[test]
+    fn shell_join_preserves_bre_alternation_backslash() {
+        assert_eq!(
+            shell_join(&a(&["grep", "-n", r"O4\|O6", "/p/f.md"])),
+            r"grep -n 'O4\|O6' /p/f.md"
+        );
+    }
+
+    #[test]
+    fn shell_join_quotes_shell_metacharacters() {
+        assert_eq!(
+            shell_join(&a(&["grep", "-nE", "O4|O6", "f.md"])),
+            "grep -nE 'O4|O6' f.md"
+        );
+        assert_eq!(
+            shell_join(&a(&["find", ".", "-name", "*.py"])),
+            "find . -name '*.py'"
+        );
+        assert_eq!(
+            shell_join(&a(&["psql", "-c", "select * from res_users"])),
+            "psql -c 'select * from res_users'"
+        );
+    }
+
+    #[test]
+    fn shell_join_escapes_embedded_single_quotes() {
+        assert_eq!(
+            shell_join(&a(&["grep", "it's", "f.md"])),
+            r"grep 'it'\''s' f.md"
+        );
+    }
+
+    #[test]
+    fn shell_join_leaves_simple_args_unquoted() {
+        assert_eq!(
+            shell_join(&a(&["git", "log", "--oneline", "-5"])),
+            "git log --oneline -5"
+        );
+    }
+
+    #[test]
+    fn shell_join_single_arg_is_raw_command_string() {
+        // `otk proxy "docker logs web | tail -5"` — one arg = whole shell command
+        assert_eq!(
+            shell_join(&a(&["docker logs web | tail -5"])),
+            "docker logs web | tail -5"
+        );
     }
 
     #[test]

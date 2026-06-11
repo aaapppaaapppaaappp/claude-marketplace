@@ -929,9 +929,13 @@ pub fn grep_filter(output: &str) -> String {
     let total_matches = clean.lines().count();
 
     for line in clean.lines() {
-        if let Some(pos) = line.find(':') {
-            let filename = &line[..pos];
-            let rest = &line[pos + 1..];
+        // A numeric prefix is a line number from single-file `grep -n`
+        // output ("46:content"), not a filename — keep the whole line.
+        let file_prefix = line.find(':').map(|pos| &line[..pos]).filter(|prefix| {
+            !prefix.is_empty() && !prefix.chars().all(|c| c.is_ascii_digit())
+        });
+        if let Some(filename) = file_prefix {
+            let rest = &line[filename.len() + 1..];
             let content = truncate_at_boundary(rest, 100);
             by_file
                 .entry(filename.to_string())
@@ -945,7 +949,12 @@ pub fn grep_filter(output: &str) -> String {
         }
     }
 
-    let mut result = format!("{} files, {} matches", by_file.len(), total_matches);
+    let file_count = by_file.keys().filter(|k| k.as_str() != "(no file)").count();
+    let mut result = if file_count == 0 {
+        format!("{} matches", total_matches)
+    } else {
+        format!("{} files, {} matches", file_count, total_matches)
+    };
 
     let mut sorted: Vec<_> = by_file.iter().collect();
     sorted.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
@@ -1231,6 +1240,18 @@ mod tests {
         let output = grep_filter(&line);
         assert!(output.contains("zh_TW.po"));
         assert!(output.contains("中中中"));
+    }
+
+    #[test]
+    fn test_grep_filter_single_file_line_numbers_are_not_files() {
+        // `grep -n PAT file` (single file) prints "46:content" — the numeric
+        // prefix is a line number, not a filename. Must not report "3 files",
+        // and the line numbers should survive into the output.
+        let out = "46:| D2 alpha\n54:| D10 beta\n132:### gamma";
+        let f = grep_filter(out);
+        assert!(f.starts_with("3 matches"), "got: {}", f);
+        assert!(!f.contains("files"), "got: {}", f);
+        assert!(f.contains("46:"), "got: {}", f);
     }
 
     #[test]
