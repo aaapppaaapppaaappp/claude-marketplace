@@ -108,6 +108,16 @@ case "$FIRST_CMD" in
 
     # -- Search --
     "grep "*|"rg "*)
+        # Context flags (-A/-B/-C, --after-context/--before-context/--context)
+        # produce dash-separated context lines ("path/file.py-118-    code")
+        # and bare "--" group separators. The otk grep filter assumes every
+        # line is "file:line:content" and splits on the FIRST colon, which
+        # shreds that output. Output-shape flags (-o/-c/-l/-L and long forms)
+        # break the same assumption. Pass those commands through unmodified.
+        if echo "$FIRST_CMD" | grep -qE -- \
+            '(^|[[:space:]])-[A-Za-z]*[ABC][0-9]*([[:space:]]|$)|(^|[[:space:]])--(after-context|before-context|context)(=[0-9]+)?([[:space:]]|$)|(^|[[:space:]])-[A-Za-z]*[oclL][A-Za-z0-9]*([[:space:]]|$)|(^|[[:space:]])--(only-matching|count|files-with-matches|files-without-match(es)?)([[:space:]]|$)'; then
+            exit 0
+        fi
         REWRITTEN="${ENV_PREFIX}${OTK_CMD} ${FIRST_CMD}"
         ;;
 

@@ -38,6 +38,8 @@ lazy_static! {
     static ref RE_WERKZEUG: Regex = Regex::new(r"^\d+\.\d+\.\d+\.\d+ - - \[").unwrap();
     static ref RE_DOCKER_PROGRESS: Regex = Regex::new(r"^(Pulling|Extracting|Downloading|Waiting|Verifying)").unwrap();
     static ref RE_SQL_BORDER: Regex = Regex::new(r"^[-+]+$").unwrap();
+    // grep/rg context lines (-A/-B/-C) use DASH separators: "path/file.py-118-    code"
+    static ref RE_GREP_CONTEXT_LINE: Regex = Regex::new(r"^[^:]+-\d+-").unwrap();
     static ref RE_BLANK_LINES: Regex = Regex::new(r"\n{3,}").unwrap();
     static ref RE_LONG_CONTENT: Regex = Regex::new(r">([^<]{80,})<").unwrap();
 
@@ -934,6 +936,20 @@ pub fn git_log_filter(output: &str) -> String {
 
 pub fn grep_filter(output: &str) -> String {
     let clean = strip_ansi(output);
+
+    // Context output (grep/rg -A/-B/-C) is NOT "file:line:content": context
+    // lines use dash separators ("path/file.py-118-    try:") and groups are
+    // delimited by bare "--" lines. Splitting those on the first colon puts
+    // code fragments into garbage filename buckets, and the per-bucket
+    // sort/dedupe/cap destroys the original line order the caller asked for.
+    // If the output looks like context output, pass it through untouched.
+    if clean
+        .lines()
+        .any(|line| line == "--" || RE_GREP_CONTEXT_LINE.is_match(line))
+    {
+        return output.to_string();
+    }
+
     let mut by_file: HashMap<String, Vec<String>> = HashMap::new();
     let total_matches = clean.lines().count();
 
@@ -1270,6 +1286,38 @@ mod tests {
         let output = grep_filter(&line);
         assert!(output.contains("(no file)"));
         assert!(output.contains("中中中"));
+    }
+
+    #[test]
+    fn test_grep_filter_context_lines_passthrough() {
+        // `grep -n -A 2` style output: match lines use colons, context lines
+        // use DASH separators. The filter must not bucket/summarize this —
+        // it must return the input verbatim (line order is load-bearing).
+        let input = "src/models/job.py:117:def compute_total(self):\n\
+                     src/models/job.py-118-    try:\n\
+                     src/models/job.py-119-        total = sum(self.line_ids)\n\
+                     --\n\
+                     src/models/job.py:205:def compute_count(self):\n\
+                     src/models/job.py-206-    return len(self.ids)";
+        assert_eq!(grep_filter(input), input);
+    }
+
+    #[test]
+    fn test_grep_filter_group_separator_passthrough() {
+        // A bare "--" group separator alone must trigger passthrough even if
+        // no dash-separated context line is present.
+        let input = "a.py:1:match one\n--\nb.py:9:match two";
+        assert_eq!(grep_filter(input), input);
+    }
+
+    #[test]
+    fn test_grep_filter_plain_matches_still_summarized() {
+        // Normal file:line:content output (no context flags) must still be
+        // grouped and summarized.
+        let input = "a.py:1:foo\na.py:2:foo\nb.py:3:foo";
+        let output = grep_filter(input);
+        assert!(output.contains("2 files, 3 matches"));
+        assert!(output.contains("a.py (2 matches):"));
     }
 
     #[test]
